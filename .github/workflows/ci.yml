@@ -29,20 +29,39 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    env:
+      APP_PORT: "8000"
+      API_BASE_URL: http://localhost:8000
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install docker compose
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker-compose-plugin
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Source manifest and run e2e
+          sudo mkdir -p /usr/local/lib/docker/cli-plugins
+          sudo curl -sSL "https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+          sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          docker compose version
+
+      - name: Source manifest and bring up stack
         run: |
-          set -e
+          set -a
           source verify/manifest.env
-          eval "$UP" || { docker compose logs --tail=100; exit 1; }
-          eval "$READY" || { docker compose logs --tail=100; exit 1; }
-          eval "$TEST_DEPS"
-          eval "$ACCEPTANCE" || { docker compose logs --tail=100; exit 1; }
+          set +a
+          eval "$UP"
+
+      - name: Run acceptance tests
+        run: |
+          python -m pip install httpx pytest
+          pytest verify/acceptance/ -v
+
+      - name: Tear down
+        if: always()
+        run: |
+          set -a
+          source verify/manifest.env
+          set +a
           eval "$DOWN"
