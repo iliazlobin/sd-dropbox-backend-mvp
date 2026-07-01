@@ -77,9 +77,7 @@ async def commit_file(
 
     # Determine which blocks are missing
     if blocklist:
-        existing_hashes_stmt = select(Block.block_hash).where(
-            Block.block_hash.in_(blocklist)
-        )
+        existing_hashes_stmt = select(Block.block_hash).where(Block.block_hash.in_(blocklist))
         existing_result = await session.execute(existing_hashes_stmt)
         existing_hashes = {row[0] for row in existing_result}
         need_blocks = [h for h in blocklist if h not in existing_hashes]
@@ -145,9 +143,7 @@ async def get_file(session: AsyncSession, file_id: uuid.UUID) -> File | None:
     return result.scalar_one_or_none()
 
 
-async def get_file_metadata(
-    session: AsyncSession, file_id: uuid.UUID
-) -> dict | None:
+async def get_file_metadata(session: AsyncSession, file_id: uuid.UUID) -> dict | None:
     """Get file metadata (works for deleted files too)."""
     stmt = select(File).where(File.file_id == file_id)
     result = await session.execute(stmt)
@@ -165,14 +161,16 @@ async def get_file_metadata(
     }
 
 
-async def list_files(
-    session: AsyncSession, namespace_id: int
-) -> list[dict]:
+async def list_files(session: AsyncSession, namespace_id: int) -> list[dict]:
     """List non-deleted files in a namespace."""
-    stmt = select(File).where(
-        File.namespace_id == namespace_id,
-        File.is_deleted == False,  # noqa: E712
-    ).order_by(File.path)
+    stmt = (
+        select(File)
+        .where(
+            File.namespace_id == namespace_id,
+            File.is_deleted == False,  # noqa: E712
+        )
+        .order_by(File.path)
+    )
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [
@@ -205,10 +203,12 @@ async def delete_file(
 
     if row is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail="File not found")
 
     if row.is_deleted:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail="File already deleted")
 
     # Access check: if caller is a shared reader (not owner), reject
@@ -222,6 +222,7 @@ async def delete_file(
         if share_row is not None:
             # Caller is a shared user — readers cannot delete
             from fastapi import HTTPException
+
             raise HTTPException(status_code=403, detail="Forbidden")
 
     if row.revision != parent_revision:

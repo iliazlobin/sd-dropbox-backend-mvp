@@ -1,10 +1,9 @@
 name: Functional
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   schedule:
     - cron: "17 13 * * *"
 
@@ -37,13 +36,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install deps
+      - name: Install dependencies
         run: pip install -e ".[dev]"
       - name: Run migrations
+        env:
+          DROPBOX_DATABASE_URL: postgresql+asyncpg://dropbox:dropbox@localhost:5432/dropbox
         run: alembic upgrade head
-        env:
-          DROPBOX_DATABASE_URL: postgresql+asyncpg://dropbox:dropbox@localhost:5432/dropbox
       - name: Run functional tests
-        run: pytest tests/functional/ -v
         env:
           DROPBOX_DATABASE_URL: postgresql+asyncpg://dropbox:dropbox@localhost:5432/dropbox
+        run: pytest tests/functional/ -v

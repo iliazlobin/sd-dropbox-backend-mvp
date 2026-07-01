@@ -1,11 +1,8 @@
-# Dropbox MVP — Architecture Design
+# Dropbox MVP — Design & Specification
 
-> Adapts the full [System Design: Dropbox](docs/system-design.md) to the MVP scope defined in
-> [docs/mvp-scope.md](docs/mvp-scope.md). This document is the concrete build contract —
-> it specifies every entity, endpoint, and service decision the implementation must follow.
-> It contains zero app code; the acceptance suite in `verify/acceptance/` enforces the FRs.
+Backend implementation of Dropbox's core file-sync primitives: block-level deduplication, content-addressed storage, two-phase upload, revision-based conflict detection, soft-delete with reference counting, and file sharing. The full target design is the System Design: Dropbox; this MVP implements the subset of primitives needed to exercise the upload/download/sync loop end-to-end.
 
-## 1. Architecture Overview
+## 1. Architecture
 
 ```mermaid
 graph TB
@@ -35,7 +32,6 @@ graph TB
     BS --> FSYS
     SS --> PG
 
-    classDef edge  fill:#fff3bf,stroke:#f08c00,color:#1a1a1a;
     classDef svc   fill:#d0ebff,stroke:#1c7ed6,color:#1a1a1a;
     classDef store fill:#d3f9d8,stroke:#2f9e44,color:#1a1a1a;
 
@@ -44,590 +40,233 @@ graph TB
     class PG,FSYS store
 ```
 
-**Layers:** Router (HTTP parse/validate/serialize, no business logic) → Service (business logic + data access) → Model (ORM, DB session). This is the standard FastAPI three-layer split from `SYSTEM-DESIGN-MVP-STANDARDS.md`.
+**Layers:** Router (HTTP parse/validate/serialize, no business logic) -> Service (business logic + data access) -> Model (SQLAlchemy 2.0 ORM, PostgreSQL). This is the standard FastAPI three-layer split.
 
-**Block storage** uses the local filesystem at `data/blocks/<sha256-hex>`, simulating Magic Pocket. No erasure coding, no cross-zone replication, no cold tiering — those are out of MVP scope.
+**Block storage** uses the local filesystem at `data/blocks/<sha256-hex>`, simulating Magic Pocket. Blocks are content-addressed by SHA-256 hex digest with 2-level directory sharding (`data/blocks/ab/cd/<full-hash>`).
 
-**No WebSockets, no Kafka, no notification pods.** File listing uses a simple polled `GET /files/list?namespace_id=` endpoint. Out-of-scope for MVP per `docs/mvp-scope.md`.
+**No WebSockets, no notification pods.** File change detection uses polled `GET /files/list?namespace_id=`.
 
-## 2. Data Model (SQLAlchemy ORM)
+## 2. Key Design Decisions
 
-```python
-# models/file.py
-class File(Base):
-    __tablename__ = "files"
+### D1: Two-phase commit with retry
 
-    file_id:      Mapped[uuid.UUID] = Column(UUID, primary_key=True, default=uuid.uuid4)
-    namespace_id: Mapped[int]       = Column(BigInteger, index=True, nullable=False)
-    path:         Mapped[str]       = Column(Text, nullable=False)
-    blocklist:    Mapped[list[str]] = Column(ARRAY(Text), nullable=False, default=[])
-    revision:     Mapped[int]       = Column(Integer, nullable=False, default=1)
-    is_deleted:   Mapped[bool]      = Column(Boolean, nullable=False, default=False)
-    size:         Mapped[int]       = Column(BigInteger, nullable=False, default=0)
-    modified_at:  Mapped[datetime]  = Column(DateTime(timezone=True), server_default=func.now())
+**Decision:** Two-phase upload — client sends blocklist, server reports `need_blocks`, client uploads missing blocks, client re-commits.
 
-    # Unique: one file path per namespace (non-deleted)
-    __table_args__ = (
-        Index("ix_files_ns_path", "namespace_id", "path", unique=True,
-              postgresql_where=text("NOT is_deleted")),
-    )
+**Rationale:** Matches Dropbox's production upload flow. Deduplication is server-side: the client never uploads a block already stored. When updating a file that is 90% identical to a prior revision, only new blocks traverse the network. Single atomic upload (all blocks inline) would re-upload every block on every revision.
+
+**Trade-off:** Two HTTP round-trips vs. one. The bandwidth savings from deduplication justify the extra latency — without it, every file revision re-uploads all blocks.
+
+### D2: PostgreSQL ARRAY for blocklist
+
+**Decision:** `blocklist TEXT[]` column on `files`, not a join table.
+
+**Rationale:** The blocklist is always read and written as an ordered whole — "give me all blocks for this file." An ARRAY avoids a JOIN on every file read. The full Dropbox design stores blocklists as blobs in the Server File Journal (SFJ); the ARRAY is the closest relational analog. If block-level queries ("which files contain hash X?") are needed later, a migration to a join table is straightforward.
+
+### D3: Soft-delete with ref_count decrement
+
+**Decision:** Set `is_deleted = true`, decrement block `ref_count`. No hard-delete.
+
+**Rationale:** Enables undo/restore later. The `ref_count` mechanism is the same one Magic Pocket uses for garbage collection. Decrementing on delete keeps block storage accounting accurate even without a GC sweep. Blocks with `ref_count = 0` accumulate until a GC job runs — negligible for MVP scale.
+
+### D4: Revision-based optimistic concurrency
+
+**Decision:** `parent_revision` integer on every commit/delete. Stale returns `409 Conflict {current_revision: N}`.
+
+**Rationale:** Prevents silent data loss. This is Dropbox's production model — clients that see a 409 rename the local file as "filename (conflicted copy).ext" and upload as a new entry. Last-write-wins would be simpler but drops data.
+
+### D5: Mock auth via X-User-Id header
+
+**Decision:** `X-User-Id` header for caller identity on sharing endpoints; `namespace_id` explicit in file operation bodies.
+
+**Rationale:** Sharing needs caller identity separate from operation scope. Production OAuth/JWT is out of MVP scope. The header establishes caller identity without coupling it to the request body.
+
+### D6: Separate block endpoints
+
+**Decision:** `POST /blocks/put` and `GET /blocks/{hash}` independent of `POST /files/commit`.
+
+**Rationale:** Blocks are the unit of deduplication and transfer. Separating them lets clients download individual blocks for file reconstruction, upload blocks independently of commits, and enables future block-level operations (LAN Sync, block caching).
+
+### D7: Share ownership on the Share row
+
+**Decision:** `owner_id` stored on the Share row, derived from `X-User-Id` at share creation time. No `owner_id` on File.
+
+**Rationale:** A file can have multiple owners in the future (shared folders). Ownership is a relationship, not a property of the file. For MVP, ownership is implicit: the user who first uploads a file is the de facto owner (they hold the `parent_revision`).
+
+## 3. Data Model
+
+```sql
+File {
+  file_id:      uuid PK
+  namespace_id: bigint    -- user/team scope
+  path:         text
+  blocklist:    text[]    -- ordered SHA-256 hex hashes
+  revision:     integer   -- monotonic per file, used for conflict detection
+  is_deleted:   boolean
+  size:         bigint    -- len(blocklist) x 4 MB
+  modified_at:  timestamp
+}
+
+-- Partial unique index: one path per namespace for non-deleted files
+CREATE UNIQUE INDEX ix_files_ns_path ON files (namespace_id, path)
+  WHERE NOT is_deleted;
+
+Block {
+  block_hash:  text PK    -- SHA-256 hex (64 chars)
+  size:        bigint     -- fixed 4 MB for MVP
+  ref_count:   integer    -- active file revisions referencing this block
+  stored_at:   timestamp
+}
+
+Share {
+  share_id:    uuid PK
+  file_id:     uuid FK -> File
+  owner_id:    bigint
+  shared_with: bigint
+  access_type: varchar(20) -- reader | editor | viewer (MVP exercises reader only)
+  created_at:  timestamp
+  UNIQUE(file_id, shared_with)
+}
 ```
 
-```python
-# models/block.py
-class Block(Base):
-    __tablename__ = "blocks"
+**Design notes:**
+- `blocklist` as `ARRAY(Text)` avoids a join table for the common read path (fetch all blocks for a file).
+- `ref_count` on Block mirrors Magic Pocket's garbage-collection pattern — count-based, not join-counted.
+- Partial unique index on `(namespace_id, path) WHERE NOT is_deleted` allows soft-deleted files to leave their path slot occupied.
+- `namespace_id` uses `bigint` (matching the full design's namespace model); MVP uses arbitrary mock IDs.
+- No `content_hash` — delta sync is out of MVP scope.
 
-    block_hash: Mapped[str]     = Column(Text, primary_key=True)   # SHA-256 hex (64 chars)
-    size:       Mapped[int]     = Column(BigInteger, nullable=False)  # 4194304 for MVP
-    ref_count:  Mapped[int]     = Column(Integer, nullable=False, default=1)
-    stored_at:  Mapped[datetime] = Column(DateTime(timezone=True), server_default=func.now())
-```
+## 4. API Reference
 
-```python
-# models/share.py
-class Share(Base):
-    __tablename__ = "shares"
+All endpoints return JSON. Mock auth via `X-User-Id` header on sharing endpoints.
 
-    share_id:    Mapped[uuid.UUID] = Column(UUID, primary_key=True, default=uuid.uuid4)
-    file_id:     Mapped[uuid.UUID] = Column(ForeignKey("files.file_id"), nullable=False)
-    owner_id:    Mapped[int]       = Column(BigInteger, nullable=False)
-    shared_with: Mapped[int]       = Column(BigInteger, nullable=False)
-    access_type: Mapped[str]       = Column(String(20), nullable=False, default="reader")
-                                     # enum: reader | editor | viewer
-    created_at:  Mapped[datetime]  = Column(DateTime(timezone=True), server_default=func.now())
+### Health
 
-    __table_args__ = (
-        UniqueConstraint("file_id", "shared_with", name="uq_share_file_user"),
-    )
-```
+`GET /healthz` — Liveness probe. Returns `200 {"status":"ok"}`.
 
-### Key design decisions for the data model
+### Files
 
-| Decision | Rationale |
-|---|---|
-| `blocklist` as `ARRAY(Text)` | PostgreSQL native array avoids a join table for the common case of blocklist retrieval. An ordered list of 64-char hex hashes is compact and well-supported by SQLAlchemy 2.0. |
-| `ref_count` on Block, not a join count | Reference counting is the Dropbox production pattern (Magic Pocket GC). Counting via `SELECT COUNT(*)` from a file-block join table would be correct but slower at scale; the MVP is small, but the `ref_count` approach is the one the full design expects, so we ship it now. |
-| Partial unique index `ix_files_ns_path` on `NOT is_deleted` | Allows soft-deleted files to leave their path slot occupied so a new file at the same path can reuse it. The full design's SFJ journal tracks path moves; MVP simplifies to this partial unique. |
-| `namespace_id` as `bigint`, not UUID | Mimics the full design's entity model (UserEntity namespace). MVP uses mock user headers; namespace_id is the scope key. |
-| No `content_hash` column | The full design stores `content_hash = hash(blocklist)` for delta comparison. MVP scope cuts delta sync — blocks are always uploaded in full. |
-| `Share.access_type` as `reader | editor | viewer` | Reserved for future MVP expansion. MVP only exercises `reader` per FR-6. |
-
-## 3. API Contracts
-
-All endpoints are mounted on the FastAPI app. Request/response bodies are JSON. Mock auth via `X-User-Id` header (out-of-scope for MVP: no OAuth).
-
-### 3.1 Health
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/healthz` | Liveness probe. Returns `200 {"status":"ok"}`. Used by compose healthcheck. |
-
-### 3.2 Files
-
-**`POST /files/commit`** — Upload blocklist, create or update a file revision.
+`POST /files/commit` — Create or update a file via two-phase blocklist commit.
 
 ```
-Request:
-  {
-    "namespace_id":  int,
-    "path":          str,
-    "blocklist":     [str, ...],   // ordered SHA-256 hex hashes
-    "parent_revision": int | null  // null for new files, current revision for updates
-  }
-
-Response 201:
-  {
-    "file_id":       "uuid",
-    "revision":      int,
-    "need_blocks":   [str, ...]    // hashes not yet stored (empty if all blocks exist)
-  }
-
-Errors:
-  422 — missing required fields (namespace_id, path, blocklist)
-  409 — Conflict: parent_revision doesn't match current revision
-        Body: {"error": "Conflict", "current_revision": N}
+Request:  {namespace_id: int, path: str, blocklist: [str], parent_revision: int|null}
+201:      {file_id: uuid, revision: int, need_blocks: [str]}
+409:      {error: "Conflict", current_revision: N}
+422:      Missing required fields
 ```
 
-Two-phase commit logic:
-1. Client sends blocklist → server checks Block table for each hash → returns `need_blocks`
-2. Client uploads missing blocks via `POST /blocks/put`
-3. Client re-commits same payload → all blocks exist → server atomically creates/updates File row + bumps revision
+First call returns `need_blocks` for hashes not yet stored. After uploading missing blocks via `POST /blocks/put`, re-commit with the same payload — all blocks exist, so the file row is created atomically, revision bumped, block ref_counts incremented.
 
-This is a simplified two-phase commit. In the full design, the Metadata API/Edgestore handles commit + journal write atomically. MVP collapses this into a single `POST /files/commit` call that can be retried after block uploads.
-
-**`GET /files/{file_id}`** — Get file metadata + blocklist.
+`GET /files/{file_id}` — Get file metadata + ordered blocklist.
 
 ```
-Response 200:
-  {
-    "file_id":    "uuid",
-    "path":       str,
-    "blocklist":  [str, ...],
-    "revision":   int,
-    "size":       int,
-    "modified_at": "ISO8601"
-  }
-
-Errors:
-  404 — file not found or is_deleted = true
+200:  {file_id: uuid, path: str, blocklist: [str], revision: int, size: int, modified_at: ISO8601}
+404:  File not found or is_deleted
 ```
 
-**`GET /files/{file_id}/metadata`** — Get file metadata only (no blocks in response).
+`GET /files/{file_id}/metadata` — Get file metadata only (no blocks).
 
 ```
-Response 200:
-  {
-    "file_id":     "uuid",
-    "path":        str,
-    "block_count": int,
-    "size":        int,
-    "revision":    int,
-    "modified_at": "ISO8601",
-    "is_deleted":  bool
-  }
-
-Errors:
-  404 — file not found
+200:  {file_id: uuid, path: str, block_count: int, size: int, revision: int, modified_at: ISO8601, is_deleted: bool}
+404:  File not found
 ```
 
-**`GET /files/list?namespace_id={ns}`** — List non-deleted files in a namespace.
+`GET /files/list?namespace_id={ns}` — List non-deleted files in a namespace, ordered by path.
 
 ```
-Response 200:
-  [
-    {
-      "file_id":    "uuid",
-      "path":       str,
-      "revision":   int,
-      "size":       int,
-      "modified_at": "ISO8601"
-    },
-    ...
-  ]
-
-Notes:
-  - Empty namespace → 200 []
-  - Excludes is_deleted = true files
+200:  [{file_id: uuid, path: str, revision: int, size: int, modified_at: ISO8601}, ...]
+     Empty namespace returns []
 ```
 
-**`POST /files/delete`** — Soft-delete a file.
+`POST /files/delete` — Soft-delete a file.
 
 ```
-Request:
-  {
-    "namespace_id":   int,
-    "file_id":        "uuid",
-    "parent_revision": int
-  }
-
-Response 200:
-  {
-    "file_id":  "uuid",
-    "deleted":  true
-  }
-
-Errors:
-  404 — file not found or already deleted
-  409 — Conflict: parent_revision doesn't match current revision
+Request:  {namespace_id: int, file_id: uuid, parent_revision: int}
+200:      {file_id: uuid, deleted: true}
+404:      File not found or already deleted
+409:      Conflict — parent_revision mismatch
+403:      Caller is a shared reader (not owner)
 ```
 
-On delete: set `is_deleted = true`, then decrement `ref_count` for each block in the file's blocklist. If `ref_count` reaches 0, the block file on disk is not immediately deleted (GC is out of MVP scope), but it's no longer referenced.
+Sets `is_deleted = true`, decrements `ref_count` for each block in the file's blocklist.
 
-### 3.3 Blocks
+### Blocks
 
-**`POST /blocks/put`** — Upload a 4 MB block (base64-encoded).
-
-```
-Request:
-  {
-    "block_hash": str,   // SHA-256 hex of the raw 4 MB content
-    "data":       str    // base64-encoded 4 MB block bytes
-  }
-
-Response 201:
-  {
-    "block_hash": str,
-    "status":     "stored" | "already_exists"
-  }
-
-Notes:
-  - Idempotent: uploading the same hash twice returns 201 "already_exists";
-    no duplicate storage or DB row.
-  - Server verifies SHA-256(data) == block_hash; mismatch → 422.
-  - Block data stored at data/blocks/<block_hash> as raw bytes.
-
-Errors:
-  422 — hash mismatch, invalid base64, or data exceeds 4 MB
-```
-
-**`GET /blocks/{block_hash}`** — Download a block by hash.
+`POST /blocks/put` — Upload a 4 MB block (base64-encoded).
 
 ```
-Response 200:
-  {
-    "block_hash": str,
-    "data":       str   // base64-encoded raw block bytes
-  }
-
-Errors:
-  404 — block not found in storage
+Request:  {block_hash: str, data: str}   // data: base64-encoded raw bytes
+201:      {block_hash: str, status: "stored"|"already_exists"}
+422:      Invalid base64 or SHA-256(data) != block_hash
 ```
 
-### 3.4 Sharing
+Idempotent: uploading the same hash twice returns `"already_exists"`; no duplicate storage or DB row.
 
-**`POST /sharing/add`** — Share a file with another user.
-
-```
-Request:
-  {
-    "file_id":     "uuid",
-    "user_id":     int,     // user to share with
-    "access_type": "reader" // only "reader" exercised in MVP
-  }
-
-Response 201:
-  {
-    "share_id":    "uuid",
-    "file_id":     "uuid",
-    "owner_id":    int,
-    "shared_with": int,
-    "access_type": "reader"
-  }
-
-Errors:
-  404 — file not found
-  409 — self-share (owner_id == user_id)
-  409 — already shared (UNIQUE constraint on file_id, shared_with)
-      Body: {"error": "Already shared"}
-```
-
-Note: `owner_id` is derived from the `X-User-Id` header on the request. MVP does not store ownership on the File row itself — ownership is implicit in the Share row's `owner_id`. This is a simplification; the full design uses Edgestore's Entity/Association model with folder ownership.
-
-**`GET /sharing/list?user_id={uid}`** — List files shared with a user.
+`GET /blocks/{block_hash}` — Download a block by hash.
 
 ```
-Response 200:
-  [
-    {
-      "file_id":     "uuid",
-      "path":        str,
-      "owner_id":    int,
-      "access_type": str
-    },
-    ...
-  ]
-
-Notes:
-  - Empty → 200 []
-  - Joins shares + files to include the file path.
+200:  {block_hash: str, data: str}   // base64-encoded raw bytes
+404:  Block not found in storage or DB
 ```
 
-## 4. Service Layer Design
+### Sharing
 
-### FileService (`services/file_service.py`)
-
-```
-commit(db, namespace_id, path, blocklist, parent_revision) → (File, need_blocks)
-  └─ Validate blocklist entries are valid SHA-256 hex (64 chars).
-  └─ Look up existing file by (namespace_id, path, is_deleted=false).
-  └─ Conflict check: if existing and parent_revision != file.revision → raise ConflictError(current_revision).
-  └─ Query Block table: which hashes don't exist? → need_blocks.
-  └─ If need_blocks is non-empty → return need_blocks without mutating (phase 1 of two-phase commit).
-  └─ If need_blocks is empty:
-       └─ If existing file: increment revision, update blocklist, size, modified_at.
-       └─ If new file: INSERT with revision=1.
-       └─ Increment ref_count for each block in the blocklist.
-       └─ Commit transaction.
-
-get_file(db, file_id) → File | None
-  └─ SELECT where file_id = X AND is_deleted = false.
-
-get_file_metadata(db, file_id) → dict | None
-  └─ SELECT file_id, path, block_count=len(blocklist), size, revision, modified_at, is_deleted.
-  └─ Returns metadata even for deleted files (is_deleted=true is legitimate metadata).
-
-list_files(db, namespace_id) → list[File]
-  └─ SELECT where namespace_id = X AND is_deleted = false, ordered by path.
-
-delete_file(db, namespace_id, file_id, parent_revision) → None
-  └─ Look up file; 404 if not found or already deleted.
-  └─ Conflict check: parent_revision must match current revision.
-  └─ Set is_deleted = true.
-  └─ For each hash in blocklist: UPDATE blocks SET ref_count = ref_count - 1.
-  └─ Commit transaction.
-```
-
-### BlockService (`services/block_service.py`)
+`POST /sharing/add` — Share a file with another user.
 
 ```
-store_block(db, block_hash, data_base64) → str ("stored" | "already_exists")
-  └─ Decode base64 → raw bytes.
-  └─ Verify SHA-256(raw_bytes) == block_hash; mismatch → 422.
-  └─ Check Block table for existing hash.
-  └─ If exists → return "already_exists" (idempotent).
-  └─ Else:
-       └─ Write raw bytes to data/blocks/<block_hash>.
-       └─ INSERT INTO blocks (block_hash, size, ref_count=1).
-       └─ Commit. Return "stored".
-
-get_block(db, block_hash) → (block_hash, data_base64) | None
-  └─ Check Block table exists + file exists on disk.
-  └─ Read data/blocks/<block_hash> → base64 encode → return.
-  └─ Not found in DB or on disk → None (404).
-
-verify_hash(raw_bytes, claimed_hash) → bool
-  └─ hashlib.sha256(raw_bytes).hexdigest() == claimed_hash.
+Request:  {file_id: uuid, user_id: int, access_type: "reader"}
+Headers:  X-User-Id: <owner_id>
+201:      {share_id: uuid, file_id: uuid, owner_id: int, shared_with: int, access_type: str}
+404:      File not found
+409:      Self-share (owner_id == user_id) or already shared
+401:      Missing X-User-Id header
 ```
 
-### SharingService (`services/sharing_service.py`)
+`GET /sharing/list?user_id={uid}` — List files shared with a user.
 
 ```
-add_share(db, file_id, owner_id, shared_with, access_type="reader") → Share
-  └─ Look up file; 404 if not found.
-  └─ If owner_id == shared_with → 409 Conflict (self-share).
-  └─ Check UNIQUE(file_id, shared_with); if exists → 409 Conflict.
-  └─ INSERT Share row. Return 201.
-
-list_shares(db, user_id) → list[dict]
-  └─ SELECT shares JOIN files ON shares.file_id = files.file_id
-  └─ WHERE shared_with = user_id.
-  └─ Return file_id, path, owner_id, access_type.
+200:  [{file_id: uuid, path: str, owner_id: int, access_type: str}, ...]
+     No shares returns []
 ```
 
-## 5. Block Storage Design
+## 5. Functional Requirements -> Acceptance Tests
 
-### Physical layout
+Each FR maps to one black-box acceptance test in `verify/acceptance/`. All eight must pass against the running system.
 
-```
-data/blocks/
-├── a1b2c3d4e5f6...   (4 MB raw bytes, filename = SHA-256 hex)
-├── f7e8d9c0b1a2...
-└── ...
-```
+| FR | Requirement | Test file | What it proves |
+|----|------------|-----------|----------------|
+| FR-1 | Upload with deduplication | `test_fr1_upload_dedup.py` | Two-phase commit flow; second commit of same blocklist returns empty `need_blocks`; block count = 3 |
+| FR-2 | Download / reconstruct | `test_fr2_download_reconstruct.py` | GET file returns blocklist; GET each block; reconstructed content matches original |
+| FR-3 | List files in namespace | `test_fr3_list_files.py` | 3 files created -> 3 listed; 1 deleted -> 2 listed; empty namespace -> [] |
+| FR-4 | Soft-delete | `test_fr4_soft_delete.py` | Delete -> file excluded from list; GET /files/{id} -> 404; block ref_counts decremented |
+| FR-5 | Conflict detection | `test_fr5_conflict_detection.py` | Commit with stale parent_revision -> 409 with current_revision |
+| FR-6 | Share file | `test_fr6_share_file.py` | Share with reader -> 201; self-share -> 409; reader can GET metadata; reader cannot delete |
+| FR-7 | List shared files | `test_fr7_list_shares.py` | Share 2 files -> list returns 2; no shares -> [] |
+| FR-8 | File metadata | `test_fr8_file_metadata.py` | GET metadata -> block_count, size, revision, is_deleted fields correct |
 
-- **Content-addressed** by SHA-256 hex digest (64-character lowercase hex string).
-- **Fixed block size:** 4 MB = 4,194,304 bytes. MVP does not support variable-size or CDC chunks.
-- **Write path:** `block_service.store_block()` writes raw bytes atomically by writing to a temp file then `os.rename()` — this prevents partial reads if the process crashes mid-write.
-- **Read path:** `open(data/blocks/<hash>, "rb").read()` → base64 encode.
-- **No GC in MVP:** Blocks with `ref_count = 0` remain on disk. The full design's Magic Pocket GC compaction job is out of scope.
+## 6. Test Results
 
-### Why local filesystem, not object storage?
+Continuous integration runs three workflows on every push and daily on schedule:
 
-The full design uses Magic Pocket (exabyte-scale blob store with cross-zone replication). MVP replaces it with the local filesystem at `data/blocks/` because:
-- Zero infrastructure: no S3/MinIO to configure in compose.
-- Path is configurable via `Settings.block_storage_dir` (default `data/blocks`).
-- The interface (`block_service.store_block` / `get_block`) is the same regardless of backend — swapping to S3 later is a single-file change in `block_service.py`.
+| Workflow | Badge |
+|----------|-------|
+| Lint (ruff v0.8.0) | [![Lint](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/lint.yml/badge.svg)](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/lint.yml) |
+| CI (unit + e2e acceptance) | [![CI](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/ci.yml/badge.svg)](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/ci.yml) |
+| Functional | [![Functional](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/functional.yml/badge.svg)](https://github.com/iliazlobin/sd-dropbox-backend-mvp/actions/workflows/functional.yml) |
 
-### Disk estimate
+**Test taxonomy:**
 
-At 4 MB per block with 250M blocks at exabyte scale (full design), metadata alone is 250M × ~50 bytes = ~12.5 GB in Block Index. MVP will never approach this. The block files themselves are the dominant storage cost.
+- **Unit tests** (`tests/unit/`) — Isolated service-layer tests. File service (commit, conflict, delete, list), block service (store, hash validation, idempotent upload), sharing service (add, list, self-share rejection).
+- **Functional tests** (`tests/functional/`) — In-process endpoint scenarios using `httpx.ASGITransport` with real PostgreSQL. Covers all 8 FRs as a single comprehensive test file exercising the full upload->download->delete->share loop.
+- **Acceptance tests** (`verify/acceptance/`) — Black-box HTTP contract tests. One file per FR, talking to the running system at `API_BASE_URL`. Uses unique namespace/user IDs per test for isolation.
 
-## 6. Key Decisions & Trade-offs
+## 7. Stack
 
-### D1: Two-phase commit with retry vs. single atomic upload
-
-**Chosen:** Two-phase commit (commit → upload missing blocks → recommit).
-
-**Alternative considered:** Single `POST /files/commit` that includes block data inline (multipart or base64-encoded array). Simpler client logic — one request.
-
-**Pro (chosen):** Matches the full Dropbox design's upload flow. Deduplication happens server-side: the client never uploads a block it already has. When uploading a file that is 90% identical to a previous version, only the new blocks traverse the network.
-
-**Con (chosen):** Requires client-side retry logic (two HTTP round-trips). More complex than a single upload.
-
-**Rationale:** Two-phase commit is the Dropbox production upload flow. The bandwidth savings from deduplication are existential — without it, every file revision re-uploads all blocks. The two-phase approach makes deduplication explicit and testable (FR-1 exercises both phases).
-
-### D2: PostgreSQL ARRAY for blocklist vs. join table
-
-**Chosen:** `blocklist TEXT[]` column on `files`.
-
-**Alternative:** Join table `file_blocks(file_id, block_hash, position)`. Normalized, queryable per-block, standard relational design.
-
-**Pro (chosen):** The blocklist is always fetched and written as an ordered whole — the query pattern is "give me all blocks for this file." An ARRAY avoids a JOIN on every file read and keeps the schema simpler for the MVP.
-
-**Con (chosen):** Can't query "which files contain block hash X?" via SQL — would need `ANY()` array operator or an unnest. MVP doesn't need this query (ref_count tracks it); if needed later, a migration to a join table is straightforward.
-
-**Rationale:** The full design stores blocklists as blobs in SFJ (not relational). The ARRAY is the closest relational analog. An ordered list of hashes is exactly what the download path needs.
-
-### D3: Soft-delete with ref_count decrement vs. hard-delete with cascading GC
-
-**Chosen:** Soft-delete (set `is_deleted = true`, decrement block `ref_count`).
-
-**Alternative:** Hard-delete the File row; run a GC job that finds unreferenced blocks.
-
-**Pro (chosen):** Soft-delete enables undo/restore later. The `ref_count` mechanism is the same one Magic Pocket uses for GC. Decrementing on delete means block storage is always accurate even without a GC sweep.
-
-**Con (chosen):** Blocks with `ref_count = 0` accumulate on disk until a GC job runs. For MVP, this is negligible.
-
-### D4: Revision-based optimistic concurrency vs. last-write-wins
-
-**Chosen:** Optimistic concurrency via `parent_revision`.
-
-**Alternative:** Last-write-wins — no conflict detection. Simpler.
-
-**Pro (chosen):** Prevents silent data loss. If client A and client B both edit the same file, one sees 409 Conflict and creates a conflicted copy (Dropbox's production pattern from FR3 of the full design).
-
-**Rationale:** This is the Dropbox production model. Revision is a monotonically increasing integer per file. The client compares its cached revision to the server's current revision. Stale client → 409 → client renames local file as "filename (conflicted copy).ext" and uploads as a new entry.
-
-### D5: Mock auth (X-User-Id header) vs. no auth
-
-**Chosen:** `X-User-Id` header for user identity.
-
-**Alternative:** No auth at all — every endpoint accepts a `user_id` or `namespace_id` in the body.
-
-**Pro (chosen):** The sharing endpoints need to know who the *caller* is (owner vs. shared-with). The header establishes caller identity without coupling it to the request body. Namespace_id is still explicit in request bodies for file operations.
-
-**Con (chosen):** Not production auth. OAuth / JWT is out of MVP scope.
-
-### D6: Separate `/blocks/put` and `/blocks/{hash}` endpoints vs. inline blocks in `/files/commit`
-
-**Chosen:** Separate block endpoints.
-
-**Alternative:** Multipart upload where block data is included in the commit.
-
-**Pro (chosen):** Blocks are the unit of deduplication and the unit of transfer. Separating them lets the client download individual blocks for file reconstruction (FR-2), upload blocks independently of commits, and enables future block-level operations (LAN Sync, block caching).
-
-### D7: Share ownership derived from X-User-Id vs. stored on File
-
-**Chosen:** `owner_id` on the Share row, derived from `X-User-Id` at share creation time.
-
-**Alternative:** Store `owner_id` on the File row itself.
-
-**Pro (chosen):** A file can have multiple legitimate owners in the future (shared folders). The File row doesn't need to encode ownership; ownership is a relationship between a user and a file, captured in the Share. For MVP, ownership is implicit: the user who first uploads a file is the de facto owner (they hold the `parent_revision`).
-
-**Con (chosen):** No explicit file ownership means anyone who knows the `file_id` could attempt to update it (subject to revision conflict). This is acceptable for MVP with mock auth.
-
-## 7. Module Layout (implementation-ready)
-
-```
-src/dropbox/               ← package name: dropbox (importable as dropbox.*)
-├── __init__.py
-├── main.py                # create_app() factory + lifespan + /healthz
-├── config.py              # pydantic-settings: DATABASE_URL, BLOCK_STORAGE_DIR
-├── database.py            # SQLAlchemy async engine, get_session dependency
-├── models/
-│   ├── __init__.py
-│   ├── file.py            # File ORM model
-│   ├── block.py           # Block ORM model
-│   └── share.py           # Share ORM model
-├── schemas/
-│   ├── __init__.py
-│   ├── file.py            # CommitRequest, FileResponse, FileMetadataResponse, etc.
-│   ├── block.py           # BlockPutRequest, BlockResponse
-│   └── sharing.py         # AddShareRequest, ShareResponse
-├── routers/
-│   ├── __init__.py
-│   ├── files.py           # /files/* endpoints (thin: parse → call service → serialize)
-│   ├── blocks.py          # /blocks/* endpoints
-│   └── sharing.py         # /sharing/* endpoints
-└── services/
-    ├── __init__.py
-    ├── file_service.py    # commit, get, list, delete, metadata business logic
-    ├── block_service.py   # store, retrieve, hash verification, dedup
-    └── sharing_service.py # add_share, list_shares, access check
-
-alembic/
-├── env.py
-├── versions/
-│   └── 001_initial.py     # Creates files, blocks, shares tables
-
-tests/
-├── conftest.py
-├── unit/                  # Isolated unit tests
-│   ├── test_file_service.py
-│   ├── test_block_service.py
-│   └── test_sharing_service.py
-└── functional/            # In-process httpx.ASGITransport scenarios
-    ├── conftest.py
-    ├── test_files.py
-    ├── test_blocks.py
-    └── test_sharing.py
-
-verify/
-├── manifest.env           # e2e-verify configuration
-└── acceptance/            # Black-box HTTP contract (one per FR)
-    ├── conftest.py
-    ├── test_fr1_upload_dedup.py
-    ├── test_fr2_download_reconstruct.py
-    ├── test_fr3_list_files.py
-    ├── test_fr4_soft_delete.py
-    ├── test_fr5_conflict_detection.py
-    ├── test_fr6_share_file.py
-    ├── test_fr7_list_shares.py
-    └── test_fr8_file_metadata.py
-
-data/
-└── blocks/                # Local filesystem block storage (gitignored)
-
-docs/
-├── system-design.md       # Full target design (from system-designs)
-├── mvp-scope.md           # MVP contract (from build kickoff)
-└── synthesis.md           # Writer's evidence-backed summary (added later)
-
-design.md                  # This file
-AGENTS.md                  # Agent workspace rules
-KICKOFF.md                 # How to launch the build loop
-README.md                  # What it is, stack, quick start, API table
-DEPLOY.md                  # Host run/teardown steps
-.gitignore
-.env.example
-pyproject.toml
-Dockerfile
-docker-compose.yml
-```
-
-**Tier assignments for implementation (per the kanban build plan):**
-
-| Task | Tier | Rationale |
-|------|------|-----------|
-| `models/*.py` (3 ORM models) | staff | Data model + migrations are load-bearing; wrong schema = broken system |
-| `services/file_service.py` (commit + conflict + delete logic) | staff | Core algorithm: two-phase commit, revision concurrency, ref_count safety |
-| `services/block_service.py` (store + verify + dedup) | staff | Block-level deduplication and hash integrity are performance/security-critical |
-| `services/sharing_service.py` | senior | CRUD with FK constraints |
-| `routers/*.py` (all 3) | senior | Thin HTTP glue: parse Pydantic, call service, serialize response |
-| `schemas/*.py` (all 3) | senior | Pydantic DTOs: field validation, serialization config |
-| `config.py` | senior | pydantic-settings boilerplate |
-| `database.py` | senior | Engine + session factory |
-| `main.py` | senior | App factory + lifespan + healthz |
-| `alembic/` migration | staff | Schema DDL must match models exactly |
-| `tests/unit/` | senior | Standard unit test scaffolding |
-| `tests/functional/` | senior | ASGITransport integration tests |
-| `Dockerfile` | senior | Multi-stage build |
-| `docker-compose.yml` | sre | Service orchestration |
-| `.env.example` | senior | Documentation |
-| `pyproject.toml` | senior | Dependency manifest |
-
-## 8. Acceptance Criteria (build-gate checklist)
-
-Each FR maps to exactly one black-box acceptance test in `verify/acceptance/`. All eight must pass against the running system for the build to ship.
-
-| # | FR | Test file | What it proves |
-|---|----|-----------|----------------|
-| 1 | Upload + dedup | `test_fr1_upload_dedup.py` | Two-phase commit flow; second commit of same blocklist returns empty need_blocks; block count = 3 |
-| 2 | Download | `test_fr2_download_reconstruct.py` | GET file returns blocklist; GET each block; reconstructed content matches original |
-| 3 | List files | `test_fr3_list_files.py` | 3 files created → 3 listed; 1 deleted → 2 listed; empty namespace → [] |
-| 4 | Soft delete | `test_fr4_soft_delete.py` | Delete → file listed as absent; GET /files/{id} → 404; block ref_counts decremented |
-| 5 | Conflict | `test_fr5_conflict_detection.py` | Commit with stale parent_revision → 409 with current_revision |
-| 6 | Share | `test_fr6_share_file.py` | Share with reader → 201; self-share → 409; reader can GET metadata; reader cannot delete |
-| 7 | List shares | `test_fr7_list_shares.py` | Share 2 files → list returns 2; no shares → [] |
-| 8 | Metadata | `test_fr8_file_metadata.py` | GET metadata → block_count, size, revision, is_deleted fields correct |
-
-## 9. Run & Test
-
-```bash
-# Start the stack (host-only, requires Docker)
-docker compose up -d
-
-# Run migrations
-docker compose run app alembic upgrade head
-
-# Verify health
-curl http://localhost:8000/healthz
-
-# Run white-box tests (in sandbox)
-pip install -e ".[dev]"
-pytest tests/unit/ tests/functional/ -v
-
-# Run black-box acceptance (against running system)
-API_BASE_URL=http://localhost:8000 pytest verify/acceptance/ -v
-```
+| Component | Technology |
+|-----------|-----------|
+| Runtime | Python 3.12, FastAPI, uvicorn |
+| Datastore | PostgreSQL 16 via SQLAlchemy 2.0 (async) + Alembic |
+| Block storage | Local filesystem (`data/blocks/`, content-addressed by SHA-256) |
+| Tests | pytest + httpx (ASGITransport for functional, HTTP for acceptance) |
+| Linting | ruff 0.8.0 |
+| Container | Docker Compose (app + postgres), multi-stage Dockerfile on `python:3.12-slim` |
+| CI | GitHub Actions (lint, ci, functional — on push + daily schedule) |

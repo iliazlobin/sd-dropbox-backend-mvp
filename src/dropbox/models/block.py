@@ -12,9 +12,7 @@ class Block(Base):
     block_hash: Mapped[str] = mapped_column(Text, primary_key=True)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     ref_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    stored_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    stored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"<Block {self.block_hash[:12]}... refs={self.ref_count}>"

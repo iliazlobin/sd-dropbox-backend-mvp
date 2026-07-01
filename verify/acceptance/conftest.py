@@ -19,6 +19,7 @@ API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def base_url():
     return API_BASE_URL
@@ -75,6 +76,7 @@ def make_block_b64(seed: str) -> str:
 # Upload helpers
 # ---------------------------------------------------------------------------
 
+
 def upload_file(client, namespace_id, path, seeds, user_id=1):
     """Full two-phase upload: commit → upload missing blocks → recommit.
 
@@ -110,7 +112,9 @@ def upload_file(client, namespace_id, path, seeds, user_id=1):
                     "data": make_block_b64(seed),
                 },
             )
-            assert r2.status_code == 201, f"Block PUT failed for {h[:12]}: {r2.status_code} {r2.text}"
+            assert (
+                r2.status_code == 201
+            ), f"Block PUT failed for {h[:12]}: {r2.status_code} {r2.text}"
 
     # Phase 3: recommit (all blocks now exist)
     if need_blocks:
@@ -133,6 +137,7 @@ def upload_file(client, namespace_id, path, seeds, user_id=1):
 # ---------------------------------------------------------------------------
 # Assertion helpers
 # ---------------------------------------------------------------------------
+
 
 def assert_200(r):
     assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"

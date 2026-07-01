@@ -24,11 +24,13 @@ async def add_share(
     file_row = result.scalar_one_or_none()
     if file_row is None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail="File not found")
 
     # Prevent self-share
     if owner_id == user_id:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=409, detail="Cannot share with self")
 
     # Check for existing share
@@ -39,6 +41,7 @@ async def add_share(
     existing_result = await session.execute(existing_stmt)
     if existing_result.scalar_one_or_none() is not None:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=409, detail="Share already exists")
 
     share = Share(
@@ -60,9 +63,7 @@ async def add_share(
     }
 
 
-async def list_shares(
-    session: AsyncSession, user_id: int
-) -> list[dict]:
+async def list_shares(session: AsyncSession, user_id: int) -> list[dict]:
     """List files shared with a user."""
     stmt = (
         select(Share, File.path)
@@ -82,9 +83,7 @@ async def list_shares(
     ]
 
 
-async def check_access(
-    session: AsyncSession, file_id: uuid.UUID, user_id: int
-) -> bool:
+async def check_access(session: AsyncSession, file_id: uuid.UUID, user_id: int) -> bool:
     """Check if a user has any access to a file (owner or shared)."""
     stmt = select(Share).where(
         Share.file_id == file_id,

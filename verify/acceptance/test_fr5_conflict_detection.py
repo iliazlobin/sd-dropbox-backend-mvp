@@ -78,7 +78,9 @@ def test_concurrent_commits_with_correct_revision_succeed(client, fresh_namespac
     )
     body2 = assert_201(r)
     assert body2["revision"] == 2
-    assert body2["need_blocks"] == []  # blocks uploaded by upload_file helper (seeds_b are new though)
+    assert (
+        body2["need_blocks"] == []
+    )  # blocks uploaded by upload_file helper (seeds_b are new though)
 
     # Third commit with correct parent_revision
     seeds_c = ["cc1"]

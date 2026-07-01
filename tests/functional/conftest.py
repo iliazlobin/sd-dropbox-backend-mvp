@@ -48,6 +48,7 @@ async def client(session):
         yield session
 
     from dropbox.database import get_session
+
     app.dependency_overrides[get_session] = override_get_session
 
     transport = ASGITransport(app=app)

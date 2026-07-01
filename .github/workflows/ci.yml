@@ -1,10 +1,9 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   schedule:
     - cron: "17 13 * * *"
 
@@ -23,28 +22,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install deps
+      - name: Install dependencies
         run: pip install -e ".[dev]"
       - name: Run unit tests
         run: pytest tests/unit/ -v
 
   e2e:
     runs-on: ubuntu-latest
+    env:
+      APP_PORT: "8000"
+      API_BASE_URL: http://localhost:8000
     steps:
       - uses: actions/checkout@v4
-      - name: Install docker compose
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker-compose-plugin
-      - name: Source manifest and run
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Source manifest and bring up stack
         run: |
           set -a
           source verify/manifest.env
           set +a
           eval "$UP"
-          eval "$READY"
-          eval "$TEST_DEPS"
-          eval "$ACCEPTANCE"
+
+      - name: Run acceptance tests
+        run: |
+          python -m pip install httpx pytest
+          pytest verify/acceptance/ -v
+
       - name: Tear down
         if: always()
         run: |

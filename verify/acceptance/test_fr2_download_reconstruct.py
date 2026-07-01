@@ -50,12 +50,14 @@ def test_download_blocks_and_reconstruct(client, fresh_namespace_id):
         assert block_data["block_hash"] == h
         # Decode base64 data
         import base64
+
         reconstructed += base64.b64decode(block_data["data"])
 
     # Build expected
     expected = make_block_data("rec-a") + make_block_data("rec-b")
-    assert reconstructed == expected, \
-        f"Reconstructed {len(reconstructed)} bytes doesn't match expected {len(expected)} bytes"
+    assert (
+        reconstructed == expected
+    ), f"Reconstructed {len(reconstructed)} bytes doesn't match expected {len(expected)} bytes"
 
 
 def test_get_file_not_found_returns_404(client):

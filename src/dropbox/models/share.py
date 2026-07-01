@@ -20,13 +20,9 @@ class Share(Base):
     owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     shared_with: Mapped[int] = mapped_column(BigInteger, nullable=False)
     access_type: Mapped[str] = mapped_column(String(20), nullable=False, default="reader")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (
-        UniqueConstraint("file_id", "shared_with", name="uq_share_file_user"),
-    )
+    __table_args__ = (UniqueConstraint("file_id", "shared_with", name="uq_share_file_user"),)
 
     def __repr__(self) -> str:
         return f"<Share {self.share_id} file={self.file_id} with={self.shared_with}>"

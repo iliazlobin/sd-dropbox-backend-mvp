@@ -36,8 +36,9 @@ def test_two_phase_upload_creates_file(client, fresh_namespace_id):
     assert "file_id" in body1
     assert body1["revision"] == 1
     # All blocks are new → all 3 should be in need_blocks
-    assert sorted(body1["need_blocks"]) == sorted(blocklist), \
-        f"Expected all blocks in need_blocks, got {body1['need_blocks']}"
+    assert sorted(body1["need_blocks"]) == sorted(
+        blocklist
+    ), f"Expected all blocks in need_blocks, got {body1['need_blocks']}"
 
     # Phase 2: upload blocks
     for seed in seeds:
@@ -62,8 +63,9 @@ def test_two_phase_upload_creates_file(client, fresh_namespace_id):
     )
     body3 = assert_201(r3)
     assert body3["revision"] == 1
-    assert body3["need_blocks"] == [], \
-        f"Expected empty need_blocks on recommit, got {body3['need_blocks']}"
+    assert (
+        body3["need_blocks"] == []
+    ), f"Expected empty need_blocks on recommit, got {body3['need_blocks']}"
 
 
 def test_dedup_same_blocklist_returns_empty_need_blocks(client, fresh_namespace_id):
@@ -87,8 +89,9 @@ def test_dedup_same_blocklist_returns_empty_need_blocks(client, fresh_namespace_
         headers={"X-User-Id": "1"},
     )
     body = assert_201(r)
-    assert body["need_blocks"] == [], \
-        f"Dedup failed: expected empty need_blocks, got {body['need_blocks']}"
+    assert (
+        body["need_blocks"] == []
+    ), f"Dedup failed: expected empty need_blocks, got {body['need_blocks']}"
 
 
 def test_idempotent_block_put(client):
@@ -124,7 +127,7 @@ def test_block_put_invalid_hash_returns_422(client):
     """POST /blocks/put with mismatched hash → 422."""
     seed_a = "hash-mismatch-a"
     seed_b = "hash-mismatch-b"
-    h = make_block_hash(seed_a)   # claim hash A
+    h = make_block_hash(seed_a)  # claim hash A
     data = make_block_b64(seed_b)  # send data B
 
     r = client.post("/blocks/put", json={"block_hash": h, "data": data})
