@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dropbox
+      POSTGRES_PASSWORD: dropbox
+      POSTGRES_DB: dropbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dropbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    ports:
+      - "${APP_PORT:-8010}:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dropbox:dropbox@db:5432/dropbox
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - block-data:/app/data
+
+volumes:
+  pgdata:
+  block-data:
