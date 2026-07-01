@@ -249,12 +249,22 @@ class TestListFiles:
     async def test_list_files_returns_non_deleted(self):
         session = make_mock_session()
         f1 = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/a.txt",
-            blocklist=[], revision=1, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/a.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
         )
         f2 = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/b.txt",
-            blocklist=[], revision=1, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/b.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
         )
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [f1, f2]
@@ -272,8 +282,12 @@ class TestDeleteFile:
     async def test_delete_marks_file_deleted(self):
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/del.txt",
-            blocklist=["h1"], revision=1, is_deleted=False,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/del.txt",
+            blocklist=["h1"],
+            revision=1,
+            is_deleted=False,
             size=4 * 1024 * 1024,
         )
         mock_result = MagicMock()
@@ -303,10 +317,16 @@ class TestDeleteFile:
     @pytest.mark.asyncio
     async def test_delete_already_deleted_raises_404(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/del.txt",
-            blocklist=[], revision=1, is_deleted=True, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/del.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=True,
+            size=0,
         )
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = f
@@ -325,8 +345,13 @@ class TestDeleteFile:
     async def test_delete_conflict_raises_409(self):
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/del.txt",
-            blocklist=[], revision=2, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/del.txt",
+            blocklist=[],
+            revision=2,
+            is_deleted=False,
+            size=0,
         )
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = f

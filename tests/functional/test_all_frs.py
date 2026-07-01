@@ -73,10 +73,16 @@ class TestFR1UploadDedup:
         seeds = ["alpha", "beta", "gamma"]
         blocklist = [make_block_hash(s) for s in seeds]
 
-        r = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/docs/r.txt", "blocklist": blocklist,
-            "parent_revision": None,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/docs/r.txt",
+                "blocklist": blocklist,
+                "parent_revision": None,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 201
         body = r.json()
         assert body["revision"] == 1
@@ -85,16 +91,26 @@ class TestFR1UploadDedup:
         # Upload blocks
         for seed in seeds:
             h = make_block_hash(seed)
-            rb = await client.post("/blocks/put", json={
-                "block_hash": h, "data": make_block_b64(seed),
-            })
+            rb = await client.post(
+                "/blocks/put",
+                json={
+                    "block_hash": h,
+                    "data": make_block_b64(seed),
+                },
+            )
             assert rb.status_code == 201
 
         # Recommit
-        r3 = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/docs/r.txt", "blocklist": blocklist,
-            "parent_revision": None,
-        }, headers={"X-User-Id": "1"})
+        r3 = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/docs/r.txt",
+                "blocklist": blocklist,
+                "parent_revision": None,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r3.status_code == 201
         body3 = r3.json()
         assert body3["revision"] == 1
@@ -106,10 +122,16 @@ class TestFR1UploadDedup:
         await upload_file(client, ns, "/a/f1.bin", seeds)
 
         blocklist = [make_block_hash(s) for s in seeds]
-        r = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/a/f2.bin", "blocklist": blocklist,
-            "parent_revision": None,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/a/f2.bin",
+                "blocklist": blocklist,
+                "parent_revision": None,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 201
         assert r.json()["need_blocks"] == []
 
@@ -127,10 +149,15 @@ class TestFR1UploadDedup:
         assert r2.json()["status"] == "already_exists"
 
     async def test_missing_fields_422(self, client, fresh_namespace_id):
-        r = await client.post("/files/commit", json={
-            "path": "/t.txt", "blocklist": [make_block_hash("z")],
-            "parent_revision": None,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/commit",
+            json={
+                "path": "/t.txt",
+                "blocklist": [make_block_hash("z")],
+                "parent_revision": None,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 422
 
     async def test_block_hash_mismatch_422(self, client):
@@ -212,10 +239,15 @@ class TestFR3ListFiles:
         remove_f = [f for f in files if f["path"] == "/remove.txt"][0]
 
         # Delete
-        rd = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": remove_f["file_id"],
-            "parent_revision": remove_f["revision"],
-        }, headers={"X-User-Id": "1"})
+        rd = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": remove_f["file_id"],
+                "parent_revision": remove_f["revision"],
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert rd.status_code == 200
 
         # List again
@@ -249,9 +281,15 @@ class TestFR4SoftDelete:
         fid = body["file_id"]
         rev = body["revision"]
 
-        r = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": fid, "parent_revision": rev,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": fid,
+                "parent_revision": rev,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 200
 
         # File should be inaccessible
@@ -267,16 +305,26 @@ class TestFR4SoftDelete:
         ns = fresh_namespace_id
         body = await upload_file(client, ns, "/tw.txt", ["tw1"])
 
-        r1 = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": body["file_id"],
-            "parent_revision": body["revision"],
-        }, headers={"X-User-Id": "1"})
+        r1 = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": body["file_id"],
+                "parent_revision": body["revision"],
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r1.status_code == 200
 
-        r2 = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": body["file_id"],
-            "parent_revision": body["revision"],
-        }, headers={"X-User-Id": "1"})
+        r2 = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": body["file_id"],
+                "parent_revision": body["revision"],
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r2.status_code == 404
 
     async def test_delete_stale_revision_409(self, client, fresh_namespace_id):
@@ -287,21 +335,30 @@ class TestFR4SoftDelete:
         # Update the file
         await upload_file(client, ns, "/cf-del.txt", ["cd2"])
 
-        r = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": body["file_id"],
-            "parent_revision": original_rev,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": body["file_id"],
+                "parent_revision": original_rev,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 409
         err = r.json()
         assert err["error"] == "Conflict"
         assert err["current_revision"] > original_rev
 
     async def test_delete_nonexistent_404(self, client, fresh_namespace_id):
-        r = await client.post("/files/delete", json={
-            "namespace_id": fresh_namespace_id,
-            "file_id": "00000000-0000-0000-0000-000000000000",
-            "parent_revision": 1,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": fresh_namespace_id,
+                "file_id": "00000000-0000-0000-0000-000000000000",
+                "parent_revision": 1,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 404
 
 
@@ -317,21 +374,31 @@ class TestFR5ConflictDetection:
 
         # Update to rev 2
         seeds_v2 = ["v2a"]
-        r2 = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/conf/f.txt",
-            "blocklist": [make_block_hash(s) for s in seeds_v2],
-            "parent_revision": 1,
-        }, headers={"X-User-Id": "1"})
+        r2 = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/conf/f.txt",
+                "blocklist": [make_block_hash(s) for s in seeds_v2],
+                "parent_revision": 1,
+            },
+            headers={"X-User-Id": "1"},
+        )
         body2 = r2.json()
         assert r2.status_code == 201
         assert body2["revision"] == 2
 
         # Stale commit
-        r3 = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/conf/f.txt",
-            "blocklist": [make_block_hash(s) for s in seeds_v2],
-            "parent_revision": 1,
-        }, headers={"X-User-Id": "1"})
+        r3 = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/conf/f.txt",
+                "blocklist": [make_block_hash(s) for s in seeds_v2],
+                "parent_revision": 1,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r3.status_code == 409
         err = r3.json()
         assert err["error"] == "Conflict"
@@ -343,11 +410,16 @@ class TestFR5ConflictDetection:
         assert body1["revision"] == 1
 
         seeds_b = ["cb1"]
-        r = await client.post("/files/commit", json={
-            "namespace_id": ns, "path": "/conc/t.txt",
-            "blocklist": [make_block_hash(s) for s in seeds_b],
-            "parent_revision": 1,
-        }, headers={"X-User-Id": "1"})
+        r = await client.post(
+            "/files/commit",
+            json={
+                "namespace_id": ns,
+                "path": "/conc/t.txt",
+                "blocklist": [make_block_hash(s) for s in seeds_b],
+                "parent_revision": 1,
+            },
+            headers={"X-User-Id": "1"},
+        )
         assert r.status_code == 201
         body2 = r.json()
         assert body2["revision"] == 2
@@ -365,17 +437,24 @@ class TestFR6ShareFile:
 
         body = await upload_file(client, ns, "/sh/doc.pdf", ["sh1"], user_id=owner_id)
 
-        r = await client.post("/sharing/add", json={
-            "file_id": body["file_id"], "user_id": reader_id, "access_type": "reader",
-        }, headers={"X-User-Id": str(owner_id)})
+        r = await client.post(
+            "/sharing/add",
+            json={
+                "file_id": body["file_id"],
+                "user_id": reader_id,
+                "access_type": "reader",
+            },
+            headers={"X-User-Id": str(owner_id)},
+        )
         assert r.status_code == 201
         share = r.json()
         assert share["owner_id"] == owner_id
         assert share["shared_with"] == reader_id
 
         # Reader can GET metadata
-        rm = await client.get(f"/files/{body['file_id']}/metadata",
-                              headers={"X-User-Id": str(reader_id)})
+        rm = await client.get(
+            f"/files/{body['file_id']}/metadata", headers={"X-User-Id": str(reader_id)}
+        )
         assert rm.status_code == 200
 
     async def test_self_share_409(self, client, fresh_namespace_id):
@@ -383,16 +462,27 @@ class TestFR6ShareFile:
         uid = 200
         body = await upload_file(client, ns, "/self/doc.txt", ["sf1"], user_id=uid)
 
-        r = await client.post("/sharing/add", json={
-            "file_id": body["file_id"], "user_id": uid, "access_type": "reader",
-        }, headers={"X-User-Id": str(uid)})
+        r = await client.post(
+            "/sharing/add",
+            json={
+                "file_id": body["file_id"],
+                "user_id": uid,
+                "access_type": "reader",
+            },
+            headers={"X-User-Id": str(uid)},
+        )
         assert r.status_code == 409
 
     async def test_share_nonexistent_404(self, client):
-        r = await client.post("/sharing/add", json={
-            "file_id": "00000000-0000-0000-0000-000000000000",
-            "user_id": 777, "access_type": "reader",
-        }, headers={"X-User-Id": "999"})
+        r = await client.post(
+            "/sharing/add",
+            json={
+                "file_id": "00000000-0000-0000-0000-000000000000",
+                "user_id": 777,
+                "access_type": "reader",
+            },
+            headers={"X-User-Id": "999"},
+        )
         assert r.status_code == 404
 
     async def test_reader_cannot_delete(self, client, fresh_namespace_id):
@@ -402,14 +492,25 @@ class TestFR6ShareFile:
 
         body = await upload_file(client, ns, "/prot/sec.txt", ["pr1"], user_id=owner_id)
 
-        await client.post("/sharing/add", json={
-            "file_id": body["file_id"], "user_id": reader_id, "access_type": "reader",
-        }, headers={"X-User-Id": str(owner_id)})
+        await client.post(
+            "/sharing/add",
+            json={
+                "file_id": body["file_id"],
+                "user_id": reader_id,
+                "access_type": "reader",
+            },
+            headers={"X-User-Id": str(owner_id)},
+        )
 
-        r = await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": body["file_id"],
-            "parent_revision": body["revision"],
-        }, headers={"X-User-Id": str(reader_id)})
+        r = await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": body["file_id"],
+                "parent_revision": body["revision"],
+            },
+            headers={"X-User-Id": str(reader_id)},
+        )
         assert r.status_code in (403, 404)
 
 
@@ -426,9 +527,15 @@ class TestFR7ListShares:
         f2 = await upload_file(client, ns, "/sh/b.txt", ["ls2"], user_id=owner_id)
 
         for f in (f1, f2):
-            r = await client.post("/sharing/add", json={
-                "file_id": f["file_id"], "user_id": reader_id, "access_type": "reader",
-            }, headers={"X-User-Id": str(owner_id)})
+            r = await client.post(
+                "/sharing/add",
+                json={
+                    "file_id": f["file_id"],
+                    "user_id": reader_id,
+                    "access_type": "reader",
+                },
+                headers={"X-User-Id": str(owner_id)},
+            )
             assert r.status_code == 201
 
         r = await client.get("/sharing/list", params={"user_id": reader_id})
@@ -450,9 +557,15 @@ class TestFR7ListShares:
         reader_b = 502
 
         f = await upload_file(client, ns, "/ex/mine.txt", ["ex1"], user_id=owner)
-        await client.post("/sharing/add", json={
-            "file_id": f["file_id"], "user_id": reader_a, "access_type": "reader",
-        }, headers={"X-User-Id": str(owner)})
+        await client.post(
+            "/sharing/add",
+            json={
+                "file_id": f["file_id"],
+                "user_id": reader_a,
+                "access_type": "reader",
+            },
+            headers={"X-User-Id": str(owner)},
+        )
 
         ra = await client.get("/sharing/list", params={"user_id": reader_a})
         assert len(ra.json()) == 1
@@ -482,10 +595,15 @@ class TestFR8Metadata:
         ns = fresh_namespace_id
         body = await upload_file(client, ns, "/meta/del.dat", ["md1"])
 
-        await client.post("/files/delete", json={
-            "namespace_id": ns, "file_id": body["file_id"],
-            "parent_revision": body["revision"],
-        }, headers={"X-User-Id": "1"})
+        await client.post(
+            "/files/delete",
+            json={
+                "namespace_id": ns,
+                "file_id": body["file_id"],
+                "parent_revision": body["revision"],
+            },
+            headers={"X-User-Id": "1"},
+        )
 
         r = await client.get(f"/files/{body['file_id']}/metadata")
         assert r.status_code == 200

@@ -25,8 +25,13 @@ class TestAddShare:
     async def test_add_share_creates_share(self):
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/f.txt",
-            blocklist=[], revision=1, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/f.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
         )
         # First execute: find file
         mock_file_result = MagicMock()
@@ -52,10 +57,16 @@ class TestAddShare:
     @pytest.mark.asyncio
     async def test_add_share_self_share_raises_409(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/f.txt",
-            blocklist=[], revision=1, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/f.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
         )
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = f
@@ -74,6 +85,7 @@ class TestAddShare:
     @pytest.mark.asyncio
     async def test_add_share_nonexistent_file_raises_404(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
@@ -92,14 +104,23 @@ class TestAddShare:
     @pytest.mark.asyncio
     async def test_add_share_duplicate_raises_409(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
         f = File(
-            file_id=uuid.uuid4(), namespace_id=1, path="/f.txt",
-            blocklist=[], revision=1, is_deleted=False, size=0,
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/f.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
         )
         existing_share = Share(
-            share_id=uuid.uuid4(), file_id=f.file_id,
-            owner_id=100, shared_with=200, access_type="reader",
+            share_id=uuid.uuid4(),
+            file_id=f.file_id,
+            owner_id=100,
+            shared_with=200,
+            access_type="reader",
         )
         mock_file_result = MagicMock()
         mock_file_result.scalar_one_or_none.return_value = f
@@ -124,10 +145,22 @@ class TestListShares:
     @pytest.mark.asyncio
     async def test_list_shares_returns_entries(self):
         session = make_mock_session()
-        f1 = File(file_id=uuid.uuid4(), namespace_id=1, path="/a.txt",
-                   blocklist=[], revision=1, is_deleted=False, size=0)
-        s1 = Share(share_id=uuid.uuid4(), file_id=f1.file_id,
-                    owner_id=100, shared_with=200, access_type="reader")
+        f1 = File(
+            file_id=uuid.uuid4(),
+            namespace_id=1,
+            path="/a.txt",
+            blocklist=[],
+            revision=1,
+            is_deleted=False,
+            size=0,
+        )
+        s1 = Share(
+            share_id=uuid.uuid4(),
+            file_id=f1.file_id,
+            owner_id=100,
+            shared_with=200,
+            access_type="reader",
+        )
         mock_row = MagicMock()
         mock_row.Share = s1
         mock_row.path = "/a.txt"
@@ -146,8 +179,13 @@ class TestCheckAccess:
     @pytest.mark.asyncio
     async def test_check_access_shared_user(self):
         session = make_mock_session()
-        share = Share(share_id=uuid.uuid4(), file_id=uuid.uuid4(),
-                       owner_id=100, shared_with=200, access_type="reader")
+        share = Share(
+            share_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
+            owner_id=100,
+            shared_with=200,
+            access_type="reader",
+        )
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = share
         session.execute.return_value = mock_result

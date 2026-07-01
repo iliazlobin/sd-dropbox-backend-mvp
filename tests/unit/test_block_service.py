@@ -72,6 +72,7 @@ class TestStoreBlock:
     @pytest.mark.asyncio
     async def test_store_block_hash_mismatch(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
         _, h, b64 = make_block_data()
         # Use wrong hash
@@ -84,6 +85,7 @@ class TestStoreBlock:
     @pytest.mark.asyncio
     async def test_store_block_invalid_base64(self):
         from fastapi import HTTPException
+
         session = make_mock_session()
 
         with pytest.raises(HTTPException) as exc:

@@ -113,5 +113,7 @@ def test_reader_cannot_delete_file(client, fresh_namespace_id, fresh_user_id):
     )
     # Reader should be forbidden (403) or file not found (404) if access denies visibility.
     # The acceptance test allows either; the requirement is "cannot delete."
-    assert r.status_code in (403, 404), \
-        f"Expected 403 or 404 for reader delete, got {r.status_code}: {r.text}"
+    assert r.status_code in (
+        403,
+        404,
+    ), f"Expected 403 or 404 for reader delete, got {r.status_code}: {r.text}"

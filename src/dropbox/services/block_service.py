@@ -18,21 +18,21 @@ def _block_path(block_hash: str) -> Path:
     return settings.block_storage_path / block_hash[:2] / block_hash[2:4] / block_hash
 
 
-async def store_block(
-    session: AsyncSession, *, block_hash: str, data_b64: str
-) -> dict:
+async def store_block(session: AsyncSession, *, block_hash: str, data_b64: str) -> dict:
     """Store a block. Returns (block_hash, status). Idempotent by hash."""
     # Decode and validate
     try:
         raw = base64.b64decode(data_b64)
     except Exception:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=422, detail="Invalid base64 data") from None
 
     # Validate hash
     computed = hashlib.sha256(raw).hexdigest()
     if computed != block_hash:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=422, detail="Block hash mismatch") from None
 
     # Check if block already exists in DB

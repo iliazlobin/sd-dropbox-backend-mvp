@@ -37,6 +37,7 @@ async def get_caller_user_id(
 
 # Static routes MUST come before parameterized routes
 
+
 @router.post("/commit", response_model=CommitResponse, status_code=201)
 async def commit_file(
     body: CommitRequest,
