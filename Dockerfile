@@ -19,12 +19,13 @@ ENV PYTHONUNBUFFERED=1
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
 COPY alembic.ini ./
 COPY alembic/ alembic/
 COPY src/ src/
 COPY pyproject.toml ./
-
-WORKDIR /app
 
 EXPOSE 8000
 
