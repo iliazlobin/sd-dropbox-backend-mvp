@@ -243,7 +243,26 @@ Each FR maps to one black-box acceptance test in `verify/acceptance/`. All eight
 | FR-7 | List shared files | `test_fr7_list_shares.py` | Share 2 files -> list returns 2; no shares -> [] |
 | FR-8 | File metadata | `test_fr8_file_metadata.py` | GET metadata -> block_count, size, revision, is_deleted fields correct |
 
-## 6. Test Results
+## 6. Test Scenarios
+
+Important behaviors are exercised in-process in `tests/functional/test_all_frs.py` (httpx `ASGITransport` against real PostgreSQL), covering the full upload -> download -> delete -> share loop:
+
+| Behavior | Test (`tests/functional/test_all_frs.py`) |
+|----------|-------------------------------------------|
+| Two-phase upload: commit -> `need_blocks` -> put blocks -> re-commit | `TestFR1UploadDedup::test_two_phase_upload` |
+| Deduplication: re-commit of an identical blocklist returns empty `need_blocks` | `TestFR1UploadDedup::test_dedup_same_blocklist` |
+| Idempotent block upload: same hash twice -> `already_exists`, no duplicate storage | `TestFR1UploadDedup::test_idempotent_block_put` |
+| Validation: missing commit fields -> 422; SHA-256(data) != hash -> 422 | `TestFR1UploadDedup::test_missing_fields_422`, `test_block_hash_mismatch_422` |
+| Download and byte-exact reconstruction from ordered blocklist | `TestFR2Download::test_download_and_reconstruct` |
+| Not-found handling: unknown file -> 404, unknown block -> 404 | `TestFR2Download::test_file_not_found_404`, `test_block_not_found_404` |
+| Namespace-scoped listing; empty namespace -> `[]`; cross-namespace isolation | `TestFR3ListFiles` (incl. `test_cross_namespace_isolation`) |
+| Soft-delete: excluded from list, GET -> 404; double-delete -> 404; stale revision -> 409 | `TestFR4SoftDelete` |
+| Conflict detection: stale `parent_revision` -> 409 with `current_revision`; fresh-revision commits succeed | `TestFR5ConflictDetection` |
+| Sharing: create -> 201; self-share -> 409; nonexistent file -> 404; reader reads metadata but cannot delete | `TestFR6ShareFile` (incl. `test_reader_cannot_delete`) |
+| Share listing: per-user isolation; no shares -> `[]` | `TestFR7ListShares` |
+| Metadata correctness: `block_count`/`size`/`revision`, incl. after delete and single-block files | `TestFR8Metadata` |
+
+## 7. Test Results
 
 Continuous integration runs three workflows on every push and daily on schedule:
 
@@ -259,7 +278,7 @@ Continuous integration runs three workflows on every push and daily on schedule:
 - **Functional tests** (`tests/functional/`) — In-process endpoint scenarios using `httpx.ASGITransport` with real PostgreSQL. Covers all 8 FRs as a single comprehensive test file exercising the full upload->download->delete->share loop.
 - **Acceptance tests** (`verify/acceptance/`) — Black-box HTTP contract tests. One file per FR, talking to the running system at `API_BASE_URL`. Uses unique namespace/user IDs per test for isolation.
 
-## 7. Stack
+## 8. Stack
 
 | Component | Technology |
 |-----------|-----------|
