@@ -55,7 +55,7 @@ real-time WebSocket notifications.
 - **Tests:** pytest + httpx.ASGITransport (functional) + HTTP (black-box acceptance)
 - **Container:** Docker Compose (app + postgres)
 
-Design → [System Design: Dropbox](https://app.notion.com/p/System-Design-Dropbox-v2026-06-28-1-38cd865005a88177a4e1ce28111dcdec)
+Design → [DESIGN.md](DESIGN.md)
 
 ## 4. Data model
 
